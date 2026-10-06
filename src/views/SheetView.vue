@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import FormulaBar from '../components/FormulaBar.vue'
 import SheetGrid from '../components/SheetGrid.vue'
+import SheetTabBar from '../components/SheetTabBar.vue'
 import SheetToolbar from '../components/SheetToolbar.vue'
 import { useSheetStore } from '../stores/sheet'
 
@@ -19,15 +20,17 @@ const store = useSheetStore()
       </div>
       <div class="header-meta">
         <span>工作簿：季度销售分析</span>
+        <span>当前工作表：{{ store.activeSheet.name }}</span>
         <span>最近增量重算：{{ store.lastRecalculated.length }} 个单元格</span>
       </div>
     </header>
     <SheetToolbar />
     <FormulaBar />
     <main class="sheet-main"><SheetGrid /></main>
+    <SheetTabBar />
     <footer class="sheet-status">
       <span>方向键导航 · Shift+方向键扩展选区 · Ctrl/Cmd+C/V 复制粘贴 · F2 编辑</span>
-      <span>循环引用：拖入或粘贴 “=A1” 类公式会自动显示 #CYCLE!</span>
+      <span>跨表引用：'华北'!B2 · 双击标签改名 · 拖动标签排序 · 跨表循环引用显示 #CYCLE!</span>
       <strong>{{ store.status }}</strong>
     </footer>
   </div>

@@ -1,11 +1,13 @@
-import type { FormulaAst } from '../types/sheet'
+import type { FormulaAst, FormulaDependency } from '../types/sheet'
 import { cellId, expandRange, parseCellId } from './cells'
 
-type TokenType = 'number' | 'string' | 'reference' | 'identifier' | 'operator' | 'leftParen' | 'rightParen' | 'comma' | 'colon'
+type TokenType = 'number' | 'string' | 'reference' | 'sheetReference' | 'identifier' | 'operator' | 'leftParen' | 'rightParen' | 'comma' | 'colon'
 
 interface Token {
   type: TokenType
   value: string
+  /** 仅 sheetReference 词元使用：公式中书写的工作表名 */
+  sheet?: string
 }
 
 export class FormulaError extends Error {
@@ -14,6 +16,12 @@ export class FormulaError extends Error {
   }
 }
 
+/**
+ * 匹配跨表引用，支持三种表名写法：
+ * '华北'!B2、"华北"!B2、华北!B2（未加引号的表名可含中日韩文字、数字、下划线和点）
+ */
+const SHEET_REFERENCE = /^(?:'([^']*)'|"([^"]*)"|([\p{L}\p{N}_][\p{L}\p{N}_.]*))!(\$?[A-Za-z]+\$?\d+)/u
+
 function tokenize(input: string): Token[] {
   const tokens: Token[] = []
   let index = 0
@@ -21,6 +29,16 @@ function tokenize(input: string): Token[] {
     const char = input[index]
     if (/\s/.test(char)) {
       index += 1
+      continue
+    }
+    const sheetReference = SHEET_REFERENCE.exec(input.slice(index))
+    if (sheetReference) {
+      tokens.push({
+        type: 'sheetReference',
+        sheet: sheetReference[1] ?? sheetReference[2] ?? sheetReference[3],
+        value: sheetReference[4].replace(/\$/g, '').toUpperCase(),
+      })
+      index += sheetReference[0].length
       continue
     }
     if (char === '"') {
@@ -129,6 +147,19 @@ class Parser {
       }
       return { type: 'reference', value: token.value }
     }
+    if (token.type === 'sheetReference') {
+      if (this.peek()?.type === 'colon') {
+        this.consume()
+        const end = this.consume()
+        if (end?.type === 'reference') return { type: 'range', sheet: token.sheet, value: `${token.value}:${end.value}` }
+        if (end?.type === 'sheetReference') {
+          if (end.sheet?.toLowerCase() !== token.sheet?.toLowerCase()) throw new FormulaError('#PARSE!')
+          return { type: 'range', sheet: token.sheet, value: `${token.value}:${end.value}` }
+        }
+        throw new FormulaError('#PARSE!')
+      }
+      return { type: 'reference', sheet: token.sheet, value: token.value }
+    }
     if (token.type === 'identifier') {
       if (token.value === 'TRUE' || token.value === 'FALSE') return { type: 'boolean', value: token.value === 'TRUE' }
       if (this.peek()?.type !== 'leftParen') throw new FormulaError('#NAME?')
@@ -175,10 +206,14 @@ function scalar(value: unknown): unknown {
   return value
 }
 
-export function evaluateAst(ast: FormulaAst, resolveRef: (id: string) => unknown, resolveRange: (range: string) => unknown[]): unknown {
+export function evaluateAst(
+  ast: FormulaAst,
+  resolveRef: (sheet: string | undefined, id: string) => unknown,
+  resolveRange: (sheet: string | undefined, range: string) => unknown[],
+): unknown {
   if (ast.type === 'number' || ast.type === 'string' || ast.type === 'boolean') return ast.value
-  if (ast.type === 'reference') return resolveRef(String(ast.value))
-  if (ast.type === 'range') return resolveRange(String(ast.value))
+  if (ast.type === 'reference') return resolveRef(ast.sheet, String(ast.value))
+  if (ast.type === 'range') return resolveRange(ast.sheet, String(ast.value))
   if (ast.type === 'unary') {
     const value = numberValue(evaluateAst(ast.left!, resolveRef, resolveRange))
     return ast.operator === '-' ? -value : value
@@ -237,11 +272,11 @@ export function evaluateAst(ast: FormulaAst, resolveRef: (id: string) => unknown
   throw new FormulaError('#VALUE!')
 }
 
-export function collectDependencies(ast: FormulaAst, result = new Set<string>()): Set<string> {
-  if (ast.type === 'reference' && ast.value) result.add(String(ast.value))
+export function collectDependencies(ast: FormulaAst, result: FormulaDependency[] = []): FormulaDependency[] {
+  if (ast.type === 'reference' && ast.value) result.push({ sheet: ast.sheet, id: String(ast.value) })
   if (ast.type === 'range' && ast.value) {
     const [start, end] = String(ast.value).split(':')
-    expandRange(start, end).forEach((id) => result.add(id))
+    expandRange(start, end).forEach((id) => result.push({ sheet: ast.sheet, id }))
   }
   if (ast.left) collectDependencies(ast.left, result)
   if (ast.right) collectDependencies(ast.right, result)
@@ -249,15 +284,51 @@ export function collectDependencies(ast: FormulaAst, result = new Set<string>())
   return result
 }
 
-export function formulaDependencies(formula: string): Set<string> {
+export function formulaDependencies(formula: string): FormulaDependency[] {
   try {
     return collectDependencies(parseFormula(formula))
   } catch {
-    return new Set()
+    return []
   }
 }
 
 export function normalizeReference(id: string): string {
   const coord = parseCellId(id)
   return coord ? cellId(coord.row, coord.col) : id
+}
+
+/**
+ * 逐段扫描公式文本，把命中的工作表引用交给 rename 决定新名字；
+ * rename 返回 null 表示保持原样。字符串字面量内容不会被误改。
+ * 改名后的表名统一以单引号形式写回（表名校验已禁止单引号，无需转义）。
+ */
+export function rewriteSheetReferences(raw: string, rename: (name: string) => string | null): string {
+  if (!raw.startsWith('=')) return raw
+  let output = '='
+  let index = 1
+  while (index < raw.length) {
+    const rest = raw.slice(index)
+    const sheetRef = /^(?:'([^']*)'|"([^"]*)"|([\p{L}\p{N}_][\p{L}\p{N}_.]*))!/u.exec(rest)
+    if (sheetRef) {
+      const name = sheetRef[1] ?? sheetRef[2] ?? sheetRef[3]
+      const next = rename(name)
+      output += next === null ? sheetRef[0] : `'${next}'!`
+      index += sheetRef[0].length
+      continue
+    }
+    const char = raw[index]
+    if (char === '"') {
+      let end = index + 1
+      while (end < raw.length && raw[end] !== '"') {
+        if (raw[end] === '\\' && end + 1 < raw.length) end += 1
+        end += 1
+      }
+      output += raw.slice(index, end + 1)
+      index = end + 1
+      continue
+    }
+    output += char
+    index += 1
+  }
+  return output
 }
