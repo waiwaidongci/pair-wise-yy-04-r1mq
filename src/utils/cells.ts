@@ -71,3 +71,34 @@ export function displayValue(value: unknown): string {
   if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE'
   return String(value)
 }
+
+/** 跨表依赖键：工作表稳定 id + 单元格 id */
+export function depKey(sheetId: string, cellId: string): string {
+  return `${sheetId}::${cellId}`
+}
+
+export function parseDepKey(key: string): { sheetId: string; cellId: string } {
+  const [sheetId, cellId] = key.split('::')
+  return { sheetId, cellId }
+}
+
+const SHEET_NAME_SAFE = /^[一-龥A-Za-z0-9_]+$/
+
+/** 将工作表名称格式化为公式中的写法（必要时加单引号） */
+export function formatSheetName(name: string): string {
+  if (SHEET_NAME_SAFE.test(name)) return name
+  return `'${name.replace(/'/g, "''")}'`
+}
+
+/** 公式中跨表引用的前缀，如 `华北!` 或 `'华北 区'!` */
+export function sheetReferencePrefix(name: string): string {
+  return `${formatSheetName(name)}!`
+}
+
+/** 校验工作表名称：非空且不含 Excel 禁用字符 */
+export function validateSheetName(name: string): string | null {
+  const trimmed = name.trim()
+  if (!trimmed) return '工作表名称不能为空'
+  if (/[:\\/?*[\]]/.test(trimmed)) return '工作表名称不能包含 : \\ / ? * [ ] 字符'
+  return null
+}

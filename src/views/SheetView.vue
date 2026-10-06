@@ -1,10 +1,13 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import FormulaBar from '../components/FormulaBar.vue'
 import SheetGrid from '../components/SheetGrid.vue'
+import SheetTabBar from '../components/SheetTabBar.vue'
 import SheetToolbar from '../components/SheetToolbar.vue'
 import { useSheetStore } from '../stores/sheet'
 
 const store = useSheetStore()
+const activeSheetName = computed(() => store.sheetNameById(store.activeSheetId))
 </script>
 
 <template>
@@ -18,16 +21,17 @@ const store = useSheetStore()
         </div>
       </div>
       <div class="header-meta">
-        <span>工作簿：季度销售分析</span>
+        <span>工作簿：季度销售分析 · 当前工作表：{{ activeSheetName }}</span>
         <span>最近增量重算：{{ store.lastRecalculated.length }} 个单元格</span>
       </div>
     </header>
     <SheetToolbar />
     <FormulaBar />
     <main class="sheet-main"><SheetGrid /></main>
+    <SheetTabBar />
     <footer class="sheet-status">
-      <span>方向键导航 · Shift+方向键扩展选区 · Ctrl/Cmd+C/V 复制粘贴 · F2 编辑</span>
-      <span>循环引用：拖入或粘贴 “=A1” 类公式会自动显示 #CYCLE!</span>
+      <span>方向键导航 · Shift+方向键扩展选区 · Ctrl/Cmd+C/V 复制粘贴 · F2 编辑 · 双击工作表标签可改名</span>
+      <span>跨表公式：如 =华北!B2 或 =SUM(华北!B2:B5)</span>
       <strong>{{ store.status }}</strong>
     </footer>
   </div>
